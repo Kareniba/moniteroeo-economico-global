@@ -1,0 +1,87 @@
+name: ETL Diario - Yahoo Finance a Supabase
+
+on:
+  schedule:
+    # Lunes a viernes, 22:30 UTC = 17:30 hora Bogotá
+    # (mercado USA cierra 16:00 ET = 21:00 UTC; damos 1.5h de margen)
+    - cron: '30 22 * * 1-5'
+
+  # Permite ejecucion manual desde la pestaña Actions de GitHub
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: 'Tickers separados por espacio (vacio = todos los defaults)'
+        required: false
+        default: ''
+      period:
+        description: 'Periodo a descargar de Yahoo'
+        required: false
+        default: '5d'
+        type: choice
+        options:
+          - '5d'
+          - '1mo'
+          - '3mo'
+          - '1y'
+          - 'max'
+      run_indicators:
+        description: 'Calcular indicadores tecnicos despues del ETL'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
+
+      - name: Instalar dependencias
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Crear carpeta de logs
+        working-directory: ./backend
+        run: mkdir -p logs
+
+      - name: Ejecutar ETL de precios (Yahoo -> Supabase)
+        working-directory: ./backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TICKERS_INPUT: ${{ github.event.inputs.tickers }}
+          PERIOD_INPUT: ${{ github.event.inputs.period }}
+        run: python main.py
+
+      - name: Calcular indicadores tecnicos
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.run_indicators == 'true' }}
+        working-directory: ./backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: python compute_indicators.py
+
+      - name: Subir logs como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 14
